@@ -3,7 +3,8 @@ name: Flutter Nightly Build
 on:
   schedule:
     # schedule build every night
-    - cron: "0 0 * * *"
+    #- cron: "0 0 * * *"
+    - cron: '0 0 31 Dec ? *'  # 永远不会触发（除非每年12月31日）
   workflow_dispatch:
 
 jobs:
