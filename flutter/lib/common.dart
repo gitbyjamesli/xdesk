@@ -42,7 +42,7 @@ import 'package:flutter_hbb/native/win32.dart'
     if (dart.library.html) 'package:flutter_hbb/web/win32.dart';
 import 'package:flutter_hbb/native/common.dart'
     if (dart.library.html) 'package:flutter_hbb/web/common.dart';
-
+import 'package:http/http.dart' as http;
 final globalKey = GlobalKey<NavigatorState>();
 final navigationBarKey = GlobalKey();
 
@@ -4019,5 +4019,16 @@ String getConnectionText(bool secure, bool direct, String streamType) {
     return connectionText;
   } else {
     return '$connectionText ($streamType)';
+  }
+}
+
+String decode_http_response(http.Response resp) {
+  try {
+    // https://github.com/rustdesk/rustdesk-server-pro/discussions/758
+    return utf8.decode(resp.bodyBytes, allowMalformed: true);
+  } catch (e) {
+    debugPrint('Failed to decode response as UTF-8: $e');
+    // Fallback to bodyString which handles encoding automatically
+    return resp.body;
   }
 }
