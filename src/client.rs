@@ -47,7 +47,7 @@ use hbb_common::{
     anyhow::{anyhow, Context},
     bail,
     config::{
-        self, keys, use_ws, Config, LocalConfig, PeerConfig, PeerInfoSerde, Resolution,
+        self, keys, use_ws, Config, Server,LocalConfig, PeerConfig, PeerInfoSerde, Resolution,
         CONNECT_TIMEOUT, READ_TIMEOUT, RELAY_PORT, RENDEZVOUS_PORT, RENDEZVOUS_SERVERS,
     },
     fs::JobType,
@@ -204,7 +204,7 @@ impl Client {
         debug_assert!(peer == interface.get_id());
         interface.update_direct(None);
         interface.update_received(false);
-        match Self::_start(peer, key, token, conn_type, interface.clone()).await {
+        match Self::_start(peer, key, token, conn_type, interface).await {
             Err(err) => {
                 let err_str = err.to_string();
                 if err_str.starts_with("Failed") {
@@ -213,19 +213,7 @@ impl Client {
                     return Err(err);
                 }
             }
-            Ok(x) => {
-                // Set x.2 to true only in the connect() function to indicate that direct_failures needs to be updated; everywhere else it should be set to false.
-                if x.2 {
-                    let direct_failures = interface.get_lch().read().unwrap().direct_failures;
-                    let direct = x.0 .1;
-                    if !interface.is_force_relay() && (direct_failures == 0) != direct {
-                        let n = if direct { 0 } else { 1 };
-                        log::info!("direct_failures updated to {}", n);
-                        interface.get_lch().write().unwrap().set_direct_failure(n);
-                    }
-                }
-                Ok((x.0, x.1))
-            }
+            Ok(x) => Ok(x),
         }
     }
 
@@ -245,7 +233,6 @@ impl Client {
             &'static str,
         ),
         (i32, String),
-        bool,
     )> {
         if config::is_incoming_only() {
             bail!("Incoming only mode");
@@ -262,7 +249,6 @@ impl Client {
                     "TCP",
                 ),
                 (0, "".to_owned()),
-                false,
             ));
         }
         // Allow connect to {domain}:{port}
@@ -276,7 +262,6 @@ impl Client {
                     "TCP",
                 ),
                 (0, "".to_owned()),
-                false,
             ));
         }
 
@@ -358,14 +343,14 @@ impl Client {
         );
         connect_futures.push(fut.boxed());
         match select_ok(connect_futures).await {
-            Ok(conn) => Ok((conn.0 .0, conn.0 .1, conn.0 .2)),
+            Ok(conn) => Ok((conn.0 .0, conn.0 .1)),
             Err(e) => Err(e),
         }
     }
 
     async fn _start_inner(
         peer: String,
-        key: String,
+        mut key: String,
         token: String,
         conn_type: ConnType,
         interface: impl Interface,
@@ -383,13 +368,13 @@ impl Client {
             &'static str,
         ),
         (i32, String),
-        bool,
     )> {
         let mut start = Instant::now();
         let mut socket = connect_tcp(&*rendezvous_server, CONNECT_TIMEOUT).await;
         debug_assert!(!servers.contains(&rendezvous_server));
         let rtt = start.elapsed();
         log::debug!("TCP connection establishment time used: {:?}", rtt);
+        let mut serv_flag = false;
         if socket.is_err() && !servers.is_empty() {
             log::info!("try the other servers: {:?}", servers);
             for server in servers {
@@ -397,13 +382,41 @@ impl Client {
                 socket = connect_tcp(&*server, CONNECT_TIMEOUT).await;
                 if socket.is_ok() {
                     rendezvous_server = server;
+                    serv_flag = true;
                     break;
                 }
             }
+            // if !serv_flag {
+            //     let custom_servers:Vec<Server> = Config::get_custom_servers();
+            //     for server in custom_servers {
+            //         if server.idServer.equals(rendezvous_server){
+            //             key = server.key;
+            //             Config::set_option("");
+            //             break;
+            //         }
+            //     }
+            // }
+
             crate::refresh_rendezvous_server();
         } else if !contained {
             crate::refresh_rendezvous_server();
         }
+        if socket.is_err() && !serv_flag {
+            let custom_servers:Vec<Server> = Config::get_custom_servers();
+            for server in custom_servers {
+                log::info!("try the custom server: {}", server.idServer);
+                let serv = check_port(server.idServer, RENDEZVOUS_PORT);
+                socket = connect_tcp(&*serv, CONNECT_TIMEOUT).await;
+                if socket.is_ok() {
+                    log::info!("the custom server: {} useable", serv);
+                    rendezvous_server = serv;
+                    key = server.key;
+                    break;
+                }
+            }
+            crate::refresh_rendezvous_server();
+        }
+
         log::info!("rendezvous server: {}", rendezvous_server);
         let mut socket = socket?;
         let my_addr = socket.local_addr();
@@ -453,6 +466,11 @@ impl Client {
             (None, None)
         };
         let udp_nat_port = udp.1.map(|x| *x.lock().unwrap()).unwrap_or(0);
+        if udp.0.is_some() && udp_nat_port == 0 {
+            let err_msg = "skip udp punch because udp nat port is 0";
+            log::info!("{}", err_msg);
+            bail!(err_msg);
+        }
         let punch_type = if udp_nat_port > 0 { "UDP" } else { "TCP" };
         msg_out.set_punch_hole_request(PunchHoleRequest {
             id: peer.to_owned(),
@@ -557,7 +575,7 @@ impl Client {
                         connect_futures.push(
                             async move {
                                 let conn = fut.await?;
-                                Ok((conn, None, if use_ws() { "WebSocket" } else { "Relay" }))
+                                Ok((conn, None, "Relay"))
                             }
                             .boxed(),
                         );
@@ -572,11 +590,7 @@ impl Client {
                         log::info!("{:?} used to establish {typ} connection", start.elapsed());
                         let pk =
                             Self::secure_connection(&peer, signed_id_pk, &key, &mut conn).await?;
-                        return Ok((
-                            (conn, typ == "IPv6", pk, kcp, typ),
-                            (feedback, rendezvous_server),
-                            false,
-                        ));
+                        return Ok(((conn, false, pk, kcp, typ), (feedback, rendezvous_server)));
                     }
                     _ => {
                         log::error!("Unexpected protobuf msg received: {:?}", msg_in);
@@ -622,7 +636,6 @@ impl Client {
             )
             .await?,
             (feedback, rendezvous_server),
-            true,
         ))
     }
 
@@ -709,6 +722,7 @@ impl Client {
         };
 
         let mut direct = !conn.is_err();
+        interface.update_direct(Some(direct));
         if interface.is_force_relay() || conn.is_err() {
             if !relay_server.is_empty() {
                 conn = Self::request_relay(
@@ -721,9 +735,8 @@ impl Client {
                     conn_type,
                 )
                 .await;
+                interface.update_direct(Some(false));
                 if let Err(e) = conn {
-                    // this direct is mainly used by on_establish_connection_error, so we update it here before bail
-                    interface.update_direct(Some(false));
                     bail!("Failed to connect via relay server: {}", e);
                 }
                 typ = "Relay";
@@ -732,22 +745,19 @@ impl Client {
                 bail!("Failed to make direct connection to remote desktop");
             }
         }
+        if !relay_server.is_empty() && (direct_failures == 0) != direct {
+            let n = if direct { 0 } else { 1 };
+            log::info!("direct_failures updated to {}", n);
+            interface.get_lch().write().unwrap().set_direct_failure(n);
+        }
         let mut conn = conn?;
         log::info!(
             "{:?} used to establish {typ} connection with {} punch",
             start.elapsed(),
             punch_type
         );
-        let res = Self::secure_connection(peer_id, signed_id_pk, key, &mut conn).await;
-        let pk: Option<Vec<u8>> = match res {
-            Ok(pk) => pk,
-            Err(e) => {
-                // this direct is mainly used by on_establish_connection_error, so we update it here before bail
-                interface.update_direct(Some(direct));
-                bail!(e);
-            }
-        };
-        log::debug!("{} punch secure_connection ok", punch_type);
+        let pk = Self::secure_connection(peer_id, signed_id_pk, key, &mut conn).await?;
+        log::info!("{} punch secure_connection ok", punch_type);
         Ok((conn, direct, pk, kcp, typ))
     }
 
@@ -3934,6 +3944,7 @@ pub mod peer_online {
         if port == 0 {
             bail!("Invalid server address: {}", rendezvous_server);
         }
+
         let online_server = format!("{}:{}", tmp[0], port - 1);
         connect_tcp(online_server, CONNECT_TIMEOUT).await
     }
@@ -4027,6 +4038,7 @@ async fn test_udp_uat(
     udp_port: Arc<Mutex<u16>>,
     mut stop_udp_rx: oneshot::Receiver<()>,
 ) -> ResultType<()> {
+    log::info!("============test_udp_uat");
     let (tx, mut rx) = oneshot::channel::<_>();
     tokio::spawn(async {
         if let Ok(v) = crate::test_nat_ipv4().await {

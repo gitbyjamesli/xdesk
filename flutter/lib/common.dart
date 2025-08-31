@@ -42,7 +42,6 @@ import 'package:flutter_hbb/native/win32.dart'
     if (dart.library.html) 'package:flutter_hbb/web/win32.dart';
 import 'package:flutter_hbb/native/common.dart'
     if (dart.library.html) 'package:flutter_hbb/web/common.dart';
-import 'package:http/http.dart' as http;
 
 final globalKey = GlobalKey<NavigatorState>();
 final navigationBarKey = GlobalKey();
@@ -2743,6 +2742,24 @@ class ServerConfig {
     this.key = key?.trim() ?? '';
   }
 
+  Map<String, dynamic> toJson() {
+    return {
+      'idServer': idServer,
+      'relayServer': relayServer,
+      'apiServer': apiServer,
+      'key': key,
+    };
+  }
+
+  factory ServerConfig.fromJson(Map<String, dynamic> json) {
+    return ServerConfig(
+      idServer: json['idServer'] ?? '',
+      relayServer: json['relayServer'] ?? '',
+      apiServer: json['apiServer'] ?? '',
+      key: json['key'] ?? '',
+    );
+  }
+
   /// decode from shared string (from user shared or rustdesk-server generated)
   /// also see [encode]
   /// throw when decoding failure
@@ -2754,7 +2771,7 @@ class ServerConfig {
     } catch (err) {
       final input = msg.split('').reversed.join('');
       final bytes = base64Decode(base64.normalize(input));
-      json = jsonDecode(utf8.decode(bytes, allowMalformed: true));
+      json = jsonDecode(utf8.decode(bytes));
     }
     idServer = json['host'] ?? '';
     relayServer = json['relay'] ?? '';
@@ -3359,11 +3376,23 @@ importConfig(List<TextEditingController>? controllers, List<RxString>? errMsgs,
   }
 }
 
+const kServerConfigHistory = 'server_config_history';
+
 Future<bool> setServerConfig(
   List<TextEditingController>? controllers,
   List<RxString>? errMsgs,
   ServerConfig config,
 ) async {
+  if (config.idServer.isEmpty) {
+    showToast(translate('ID Server cannot be empty'));
+    return false;
+  }
+
+  if (config.relayServer.isEmpty) {
+    showToast(translate('Relay Server cannot be empty'));
+    return false;
+  }
+
   String removeEndSlash(String input) {
     if (input.endsWith('/')) {
       return input.substring(0, input.length - 1);
@@ -3407,7 +3436,6 @@ Future<bool> setServerConfig(
     }
   }
   final oldApiServer = await bind.mainGetApiServer();
-
   // should set one by one
   await bind.mainSetOption(
       key: 'custom-rendezvous-server', value: config.idServer);
@@ -3420,7 +3448,68 @@ Future<bool> setServerConfig(
       gFFI.userModel.isLogin) {
     gFFI.userModel.logOut(apiServer: oldApiServer);
   }
+
+  // 在保存配置后添加历史记录
+  if (await saveServerConfig(config)) {
+    debugPrint("Added server config to history: ${config.idServer}");
+  }
   return true;
+}
+
+Future<bool> saveServerConfig(ServerConfig config) async {
+  try {
+    // 加载现有历史记录
+    final history = await loadServerConfigHistory();
+
+    // 检查是否已存在相同配置
+    final existingIndex = history.indexWhere((c) =>
+    c.idServer == config.idServer &&
+        c.relayServer == config.relayServer &&
+        c.apiServer == config.apiServer &&
+        c.key == config.key);
+
+    if (existingIndex != -1) {
+      // 如果已存在，移到列表最前面
+      final existing = history.removeAt(existingIndex);
+      history.insert(0, existing);
+    } else {
+      // 添加新配置到列表最前面
+      history.insert(0, config);
+
+      // 限制历史记录数量（最多10条） - 关键限制逻辑
+      if (history.length > 10) {
+        // 移除最旧的记录（即列表最后面的记录）
+        history.removeLast();
+      }
+      // history.clear();
+    }
+
+    // 保存更新后的历史记录
+    await bind.mainSetOption(
+      key: kServerConfigHistory,
+      value: jsonEncode(history.map((c) => c.toJson()).toList()),
+    );
+
+    return true;
+  } catch (e) {
+    debugPrint("Failed to save server config history: $e");
+    return false;
+  }
+}
+
+// 4. 实现加载历史记录的函数
+Future<List<ServerConfig>> loadServerConfigHistory() async {
+  // cm
+  try {
+    final historyJson = await bind.mainGetOption(key: kServerConfigHistory);
+    if (historyJson.isEmpty) return [];
+
+    final List<dynamic> historyList = jsonDecode(historyJson);
+    return historyList.map((item) => ServerConfig.fromJson(item)).toList();
+  } catch (e) {
+    debugPrint("Failed to load server config history: $e");
+    return [];
+  }
 }
 
 ColorFilter? svgColor(Color? color) {
@@ -3930,16 +4019,5 @@ String getConnectionText(bool secure, bool direct, String streamType) {
     return connectionText;
   } else {
     return '$connectionText ($streamType)';
-  }
-}
-
-String decode_http_response(http.Response resp) {
-  try {
-    // https://github.com/rustdesk/rustdesk-server-pro/discussions/758
-    return utf8.decode(resp.bodyBytes, allowMalformed: true);
-  } catch (e) {
-    debugPrint('Failed to decode response as UTF-8: $e');
-    // Fallback to bodyString which handles encoding automatically
-    return resp.body;
   }
 }

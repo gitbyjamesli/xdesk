@@ -26,7 +26,9 @@ use hbb_common::{
     config::{self, keys::OPTION_ALLOW_WEBSOCKET, Config, Config2},
     futures::StreamExt as _,
     futures_util::sink::SinkExt,
-    log, password_security as password, timeout,
+    log,
+    message_proto::FileTransferSendConfirmRequest,
+    password_security as password, timeout,
     tokio::{
         self,
         io::{AsyncRead, AsyncWrite},
@@ -105,6 +107,7 @@ pub enum FS {
         last_modified: u64,
         is_upload: bool,
     },
+    SendConfirm(Vec<u8>),
     Rename {
         id: i32,
         path: String,
@@ -1096,17 +1099,24 @@ pub fn get_id() -> String {
 }
 
 pub async fn get_rendezvous_server(ms_timeout: u64) -> (String, Vec<String>) {
-    if let Ok(Some(v)) = get_config_async("rendezvous_server", ms_timeout).await {
-        let mut urls = v.split(",");
-        let a = urls.next().unwrap_or_default().to_owned();
-        let b: Vec<String> = urls.map(|x| x.to_owned()).collect();
-        (a, b)
-    } else {
-        (
-            Config::get_rendezvous_server(),
-            Config::get_rendezvous_servers(),
-        )
-    }
+    // log::info!("get_rendezvous_server ipc");
+    // if let Ok(Some(v)) = get_config_async("rendezvous_server", ms_timeout).await {
+    //     log::info!("get_rendezvous_server ipc 1");
+    //     let mut urls = v.split(",");
+    //     let a = urls.next().unwrap_or_default().to_owned();
+    //     let b: Vec<String> = urls.map(|x| x.to_owned()).collect();
+    //     (a, b)
+    // } else {
+    //     log::info!("get_rendezvous_server ipc 2");
+    //     (
+    //         Config::get_rendezvous_server(),
+    //         Config::get_rendezvous_servers(),
+    //     )
+    // }
+    (
+        Config::get_rendezvous_server(),
+        Config::get_rendezvous_servers(),
+    )
 }
 
 async fn get_options_(ms_timeout: u64) -> ResultType<HashMap<String, String>> {

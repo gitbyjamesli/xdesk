@@ -181,7 +181,16 @@ customImageQualitySetting() {
 List<Widget> ServerConfigImportExportWidgets(
   List<TextEditingController> controllers,
   List<RxString> errMsgs,
+  List<ServerConfig> historyConfigs,
+  RxBool showHistory,
 ) {
+  add(){
+    controllers[0].text = "";
+    controllers[1].text = "";
+    controllers[2].text = "";
+    controllers[3].text = "";
+  }
+
   import() {
     Clipboard.getData(Clipboard.kTextPlain).then((value) {
       importConfig(controllers, errMsgs, value?.text);
@@ -201,6 +210,26 @@ List<Widget> ServerConfigImportExportWidgets(
   }
 
   return [
+    Tooltip(
+      message: translate('Add server config'),
+      child: IconButton(
+          icon: Icon(Icons.add, color: Colors.grey), onPressed: add),
+    ),
+    Tooltip(
+      message: translate('Select server config'),
+      child: IconButton(
+        icon: Icon(Icons.history, color: Colors.grey),
+        onPressed: () {
+          if(historyConfigs.isNotEmpty){
+            showHistory.value = !showHistory.value;
+          }else{
+            Future.delayed(Duration.zero, () {
+              showToast(translate('No history configurations found'));
+            });
+          }
+        },
+      ),
+    ),
     Tooltip(
       message: translate('Import server config'),
       child: IconButton(

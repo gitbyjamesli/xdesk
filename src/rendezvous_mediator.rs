@@ -26,10 +26,7 @@ use hbb_common::{
     AddrMangle, IntoTargetAddr, ResultType, Stream, TargetAddr,
 };
 
-use crate::{
-    check_port,
-    server::{check_zombie, new as new_server, ServerPtr},
-};
+use crate::{check_port, server::{check_zombie, new as new_server, ServerPtr}, ui_interface};
 
 type Message = RendezvousMessage;
 
@@ -153,6 +150,25 @@ impl RendezvousMediator {
             .unwrap_or(host.to_owned())
     }
 
+    pub async fn check_server_status() -> ResultType<()> {
+        let servers = Config::get_custom_servers();
+        for server in servers{
+            log::info!("try use custom server: {}",&server.idServer);
+            let serv = check_port(&server.idServer, RENDEZVOUS_PORT);
+            let socket = connect_tcp(&*serv, CONNECT_TIMEOUT).await;
+            if socket.is_ok() {
+                log::info!("custom server: {} is useable",serv);
+                Config::set_option("custom-rendezvous-server".to_string(),server.idServer);
+                Config::set_option("relay-server".to_string(),server.relayServer);
+                Config::set_option("api-server".to_string(),server.apiServer);
+                Config::set_option("key".to_string(),server.key);
+                Self::restart();
+                break;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn start_udp(server: ServerPtr, host: String) -> ResultType<()> {
         let host = check_port(&host, RENDEZVOUS_PORT);
         log::info!("start udp: {host}");
@@ -255,7 +271,17 @@ impl RendezvousMediator {
                                 Config::update_latency(&host, 0);
                                 old_latency = 0;
                             }
+
                         }
+                        if timeout {
+                            // if let Ok(useable) =Self::check_server_status().await {
+                            //     // if useable{
+                            //     //     timeout = false;
+                            //     // }
+                            // }
+                            Self::check_server_status().await;
+                        }
+
                         rz.register_peer(Sink::Framed(&mut socket, &addr)).await?;
                         last_register_sent = now;
                     }
