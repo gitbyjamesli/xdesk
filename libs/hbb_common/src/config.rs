@@ -28,6 +28,8 @@ use crate::{
     },
 };
 
+use std::env;
+
 pub const RENDEZVOUS_TIMEOUT: u64 = 12_000;
 pub const CONNECT_TIMEOUT: u64 = 18_000;
 pub const READ_TIMEOUT: u64 = 18_000;
@@ -647,6 +649,13 @@ impl Config {
             let org = "".to_owned();
             #[cfg(target_os = "macos")]
             let org = ORG.read().unwrap().clone();
+
+            if let Some(config_path) = get_executable_path() {
+                let mut path =config_path;
+                path.push(p);
+                return path;
+            }
+
             // /var/root for root
             if let Some(project) =
                 directories_next::ProjectDirs::from("", &org, &APP_NAME.read().unwrap())
@@ -1326,6 +1335,12 @@ impl Config {
             path.with_extension("toml")
         }
     }
+}
+
+fn get_executable_path() -> Option<PathBuf> {
+    let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
+    //Some(exe_dir.join("config").join("app.toml"))
+    Some(exe_dir.join("config"))
 }
 
 const PEERS: &str = "peers";
